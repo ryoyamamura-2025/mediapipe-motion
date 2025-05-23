@@ -1,186 +1,148 @@
 import streamlit as st
 import cv2
-import mediapipe as mp
 import numpy as np
-import tempfile
-import os
+import mediapipe as mp
+import subprocess
 
-# --- MediaPipe Pose Landmarker の初期化 ---
+st.title("なんのうごき？🕺🕺")
+video_data = st.file_uploader("", ['mp4','mov', 'avi'])
+
+info_message_placeholder = st.empty()
+analysis_message_placeholder = st.empty()
+progress_bar_placeholder = st.empty()
+success_message_placeholder = st.empty()
+
+temp_file_to_save = './temp_file_1.mp4'
+temp_file_result  = './temp_file_2.mp4'
+temp_file_result_black  = './temp_file_black.mp4'
+
+# func to save BytesIO on a drive
+def write_bytesio_to_file(filename, bytesio):
+    """
+    Write the contents of the given BytesIO to a file.
+    Creates the file or overwrites the file if it does
+    not exist yet. 
+    """
+    with open(filename, "wb") as outfile:
+        # Copy the BytesIO stream to the output file
+        outfile.write(bytesio.getbuffer())
+
+# mediapipe の初期化
 @st.cache_resource
 def get_pose_model():
-    """MediaPipe Pose Landmarker モデルを初期化し、キャッシュします。"""
     mp_pose = mp.solutions.pose
     pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5, min_tracking_confidence=0.5)
     return pose, mp_pose.POSE_CONNECTIONS, mp.solutions.drawing_utils
 
 pose, POSE_CONNECTIONS, mp_drawing = get_pose_model()
 
-# --- 定数とパスの管理 ---
-TEMP_DIR = tempfile.gettempdir() # 一時ファイルの保存ディレクトリ
+if video_data:
+    # save uploaded video to disc
+    write_bytesio_to_file(temp_file_to_save, video_data)
 
-# --- ユーティリティ関数 ---
-def process_video_with_pose(video_path):
-    """
-    指定された動画ファイルに対してMediaPipe Pose Landmarkerでポーズ推定を行い、
-    黒背景と元背景の2種類の動画を生成します。
-    """
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        st.error("どうががひらけません")
-        return None, None
-
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v') # MP4Vコーデックを使用
-
-    # 一時ファイル名を生成
-    output_video_path_black = os.path.join(TEMP_DIR, f"output_black_{os.urandom(8).hex()}.mp4")
-    output_video_path_original = os.path.join(TEMP_DIR, f"output_original_{os.urandom(8).hex()}.mp4")
-
-    out_black = cv2.VideoWriter(output_video_path_black, fourcc, fps, (width, height))
-    out_original = cv2.VideoWriter(output_video_path_original, fourcc, fps, (width, height))
-
-    analysis_message_placeholder.write("ちょっとまってね...")
-    progress_bar = progress_bar_placeholder.progress(0)
-
-    frame_count = 0
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        frame_count += 1
-        progress_bar.progress(min(int(frame_count / total_frames * 100), 100))
-
-        image_original_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        image_original_rgb.flags.writeable = False
-
-        black_background = np.zeros((height, width, 3), dtype=np.uint8)
-        image_black_rgb = black_background.copy()
-        image_black_rgb.flags.writeable = False
-
-        results = pose.process(image_original_rgb)
-
-        image_original_rgb.flags.writeable = True
-        image_black_rgb.flags.writeable = True
-
-        if results.pose_landmarks:
-            mp_drawing.draw_landmarks(
-                image_original_rgb,
-                results.pose_landmarks,
-                POSE_CONNECTIONS,
-                mp_drawing.DrawingSpec(color=(255, 255, 0), thickness=3, circle_radius=3),
-                mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3)
-            )
-            mp_drawing.draw_landmarks(
-                image_black_rgb,
-                results.pose_landmarks,
-                POSE_CONNECTIONS,
-                mp_drawing.DrawingSpec(color=(255, 255, 0), thickness=3, circle_radius=3),
-                mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3)
-            )
-
-        out_original.write(cv2.cvtColor(image_original_rgb, cv2.COLOR_RGB2BGR))
-        out_black.write(cv2.cvtColor(image_black_rgb, cv2.COLOR_RGB2BGR))
-
-    cap.release()
-    out_original.release()
-    out_black.release()
-
-    return output_video_path_black, output_video_path_original
-
-def clear_temp_files():
-    """セッションステートに保存されている一時動画ファイルを削除します。"""
-    for key in ['uploaded_file_path', 'output_video_path_black', 'output_video_path_original']:
-        if st.session_state.get(key) and os.path.exists(st.session_state[key]):
-            os.unlink(st.session_state[key])
-            st.session_state[key] = ""
-
-# --- Streamlit UI ---
-st.title("なんのうごき？")
-
-# セッションステートの初期化
-if 'output_video_path_black' not in st.session_state:
-    st.session_state.output_video_path_black = ""
-if 'output_video_path_original' not in st.session_state:
-    st.session_state.output_video_path_original = ""
-if 'uploaded_file_path' not in st.session_state:
-    st.session_state.uploaded_file_path = ""
-
-# --- メッセージとプログレスバーのプレースホルダー ---
-info_message_placeholder = st.empty()
-analysis_message_placeholder = st.empty()
-progress_bar_placeholder = st.empty()
-success_message_placeholder = st.empty()
-
-# --- 動画表示用のカラム ---
-col1_video, col2_video = st.columns(2)
-with col1_video:
-    video_placeholder1 = st.empty()
-with col2_video:
-    video_placeholder2 = st.empty()
-
-# --- ファイルアップローダー ---
-uploaded_file = st.file_uploader(" ", type=["mp4", "mov", "avi"])
-
-if uploaded_file is not None:
-    clear_temp_files() # 新しいファイルがアップロードされたら既存の一時ファイルをクリア
-
-    # メッセージやプログレスバーをリセット
-    info_message_placeholder.empty()
-    analysis_message_placeholder.empty()
-    progress_bar_placeholder.empty()
-    success_message_placeholder.empty()
-    video_placeholder1.empty()
-    video_placeholder2.empty()
-
-    info_message_placeholder.info("どうがありがとう")
-
-    # 一時ファイルに動画を保存
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tfile:
-        tfile.write(uploaded_file.read())
-        video_path = tfile.name
-    st.session_state.uploaded_file_path = video_path
-
+    # read it with cv2.VideoCapture(), 
+    # so now we can process it with OpenCV functions
     try:
-        output_black, output_original = process_video_with_pose(video_path)
-
-        if output_black and output_original:
-            st.session_state.output_video_path_black = output_black
-            st.session_state.output_video_path_original = output_original
-
-            info_message_placeholder.empty()
+        cap = cv2.VideoCapture(temp_file_to_save)
+        info_message_placeholder.info("💁どうがありがとう")
+        if not cap.isOpened():
+            info_message_placeholder.empty() # メッセージをクリア
             analysis_message_placeholder.empty()
             progress_bar_placeholder.empty()
-            success_message_placeholder.success("おまたせ！")
+            st.error("💩どうががひらけません！ぱぱに言ってね🧔")
+            st.stop()
 
-            video_placeholder1.video(st.session_state.output_video_path_black, format="video/mp4", start_time=0)
-        else:
-            st.error("動画の処理に失敗しました。")
+        # grab some parameters of video to use them for writing a new, processed video
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        frame_fps = cap.get(cv2.CAP_PROP_FPS)  ##<< No need for an int
+        st.write(width, height, frame_fps)
+        
+        # specify a writer to write a processed video to a disk frame by frame
+        fourcc_mp4 = cv2.VideoWriter_fourcc(*'mp4v')
+        out_mp4 = cv2.VideoWriter(temp_file_result, fourcc_mp4, frame_fps, (width, height))
+        out_black = cv2.VideoWriter(temp_file_result_black, fourcc_mp4, frame_fps, (width, height))
 
-    except Exception as e:
+        # プログレスバー用
+        analysis_message_placeholder.write("⌛️ちょっとまってね...☕")
+        frame_count = 0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        progress_bar = progress_bar_placeholder.progress(0) # プレースホルダーにプログレスバーを表示
+
+        while True:
+            ret,frame = cap.read()
+            if not ret: break
+
+            frame_count += 1
+            progress_bar.progress(min(int(frame_count / total_frames * 100), 100))
+
+            # 黒背景フレームを作成
+            black_background = frame.copy()*0
+
+            # ポーズ推定の実行（オリジナル画像に対して行う）
+            results = pose.process(frame)
+
+            if results.pose_landmarks:
+                # 元背景の画像にランドマークを描画
+                mp_drawing.draw_landmarks(
+                    frame,
+                    results.pose_landmarks,
+                    POSE_CONNECTIONS,
+                    mp_drawing.DrawingSpec(color=(0, 255, 255), thickness=3, circle_radius=3),
+                    mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3)
+                )
+                
+                # 黒背景の画像にランドマークを描画
+                mp_drawing.draw_landmarks(
+                    black_background,
+                    results.pose_landmarks,
+                    POSE_CONNECTIONS,
+                    mp_drawing.DrawingSpec(color=(0, 255, 255), thickness=3, circle_radius=3),
+                    mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=3)
+                )
+
+            # # 各動画ファイルにフレームを書き込み
+            out_mp4.write(frame)
+            out_black.write(black_background)
+
+            # gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) ##<< Generates a grayscale (thus only one 2d-array)
+            # out_mp4.write(gray)
+        
+        ## Close video files
+        out_mp4.release()
+        out_black.release() 
+        cap.release()
+
+        # 解析完了後のメッセージとプログレスバーをクリア
         info_message_placeholder.empty()
         analysis_message_placeholder.empty()
+        progress_bar_placeholder.empty() # プログレスバーをクリア
+        success_message_placeholder.success("🦁おまたせ！")
+
+        ## Reencodes video to H264 using ffmpeg
+        ##  It calls ffmpeg back in a terminal so it fill fail without ffmpeg installed
+        ##  ... and will probably fail in streamlit cloud
+        convertedVideo = "./testh264.mp4"
+        subprocess.call(args=f"ffmpeg -y -i {temp_file_result} -c:v libx264 {convertedVideo}".split(" "))
+        convertedVideo_black = "./testh264_black.mp4"
+        subprocess.call(args=f"ffmpeg -y -i {temp_file_result_black} -c:v libx264 {convertedVideo_black}".split(" "))
+        
+        ## Show results
+        col1, col2 = st.columns(2)
+        mov1, mov2 = st.columns(2)
+        col1.write("なんだろう❓️🤔🤔🤔")
+        mov1.video(convertedVideo_black)
+
+        with col2:
+            if st.button("💡せいかいをみる"):
+                col2.write("こんなうごきでした✨️")
+                mov2.video(convertedVideo)
+
+    except Exception as e:
+        info_message_placeholder.empty() # メッセージをクリア
+        analysis_message_placeholder.empty()
         progress_bar_placeholder.empty()
-        st.error(f"動画処理中にエラーが発生しました: {e}")
-    finally:
-        # アップロードされた一時動画ファイルを削除
-        if os.path.exists(video_path):
-            os.unlink(video_path)
-            st.session_state.uploaded_file_path = ""
+        st.error(f"エラー！☹️ぱぱに言ってね: {e}")
 
 else:
-    info_message_placeholder.info("どうがをえらんでね")
-
-# 解析済みの動画が存在する場合に「せいかいは？」ボタンを表示
-if st.session_state.output_video_path_black or st.session_state.output_video_path_original:
-    col_buttons_above_videos = st.columns(2)
-    with col_buttons_above_videos[1]:
-        if st.button("せいかいは？"):
-            if st.session_state.output_video_path_original and os.path.exists(st.session_state.output_video_path_original):
-                video_placeholder2.video(st.session_state.output_video_path_original, format="video/mp4", start_time=0)
-            else:
-                st.warning("元背景の動画が利用できません。再度ファイルをアップロードしてください。")
+    info_message_placeholder.info("👧どうがをえらんでね🎦")
